@@ -3,7 +3,7 @@ import sys
 import json
 import threading
 import time
-import shutil # --- IMPORTAÇÃO PARA O BACKUP ---
+import shutil
 import pythoncom
 import win32com.client as win32
 import re
@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
+from ttkbootstrap.dialogs import Querybox
 from PIL import Image, ImageTk
 
 # --- FUNÇÃO MÁGICA PARA A LOGO NO .EXE ---
@@ -38,7 +39,7 @@ ARQUIVOS_TEMPLATES = {
     "berrini": os.path.join(PASTA_BASE, "email_template_berrini.txt"),
     "reaviso_scs": os.path.join(PASTA_BASE, "email_template_reaviso_scs.txt"),
     "reaviso_berrini": os.path.join(PASTA_BASE, "email_template_reaviso_berrini.txt"),
-    "personalizada": os.path.join(PASTA_BASE, "email_template_personalizada.txt") # --- NOVO TEMPLATE ---
+    "personalizada": os.path.join(PASTA_BASE, "email_template_personalizada.txt")
 }
 
 TEXTOS_PADROES = {
@@ -146,7 +147,6 @@ Atenciosamente;
 *Operações Benefícios*
 adm.beneficios@casasbahia.com.br""",
 
-    # --- NOVO TEXTO PADRÃO PARA MENSAGEM PERSONALIZADA ---
     "personalizada": """Olá {primeiro_nome}, tudo bem?
 
 [Apague este texto e digite o seu comunicado aqui. Você pode usar a tag {primeiro_nome} quantas vezes quiser no texto para o robô trocar pelo nome da pessoa.]
@@ -156,7 +156,6 @@ Atenciosamente;
 adm.beneficios@casasbahia.com.br"""
 }
 
-# --- FUNÇÕES DE SUPORTE ---
 def carregar_template(tipo):
     caminho = ARQUIVOS_TEMPLATES[tipo]
     if os.path.exists(caminho):
@@ -172,8 +171,7 @@ def salvar_template(tipo, texto):
 
 
 # --- LÓGICA DO ROBÔ DE E-MAIL ---
-def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
-    # Necessário para o Outlook rodar em uma Thread secundária no Windows
+def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro, remetente_oficial):
     pythoncom.CoInitialize() 
     
     app_gui.atualizar_status("Lendo planilha e conectando ao Outlook...", INFO)
@@ -183,10 +181,8 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
         wb = load_workbook(caminho_arquivo)
         sh_ROBO = wb["ROBO"]
         
-        # Pega as configurações de C4 e C6, garantindo que não deem erro se estiverem vazias
         assunto = sh_ROBO["C4"].value if sh_ROBO["C4"].value else "Atualização - Cartão Alelo"
         bcc = sh_ROBO["C6"].value
-        remetente_oficial = "adm.beneficios@casasbahia.com.br" 
         
         try:
             outlook = win32.Dispatch('outlook.application')
@@ -212,7 +208,6 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
         for index, row in df_pendentes.iterrows():
             email_destino = str(row.get('Email', '')).strip()
             
-            # --- BLINDAGEM CONTRA LINHAS VAZIAS ---
             if not email_destino or email_destino.lower() == 'nan':
                 continue
                 
@@ -221,7 +216,6 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
             matricula = str(row.get('Matricula', 'N/D')).split('.')[0] 
             cargo = str(row.get('Cargo', 'N/D'))
             
-            # Tratamento da data para não vir como Timestamp do Pandas
             try:
                 data_postagem = pd.to_datetime(row.get('Data de Postagem')).strftime('%d/%m/%Y')
             except:
@@ -229,10 +223,9 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
             
             primeiro_nome = nome.split()[0].capitalize() if nome and nome.lower() != 'nan' else "Colaborador"
             
-            # Conversão do texto puro para HTML do Outlook
             texto_preparado = template_texto_puro.replace("{primeiro_nome}", primeiro_nome)
             html_miolo = texto_preparado.replace('\n', '<br>')
-            html_miolo = re.sub(r'\*(.*?)\*', r'<b>\1</b>', html_miolo) # Negrito
+            html_miolo = re.sub(r'\*(.*?)\*', r'<b>\1</b>', html_miolo) 
             
             if "[TABELA_RASTREIO]" in html_miolo:
                 tabela_html = f"""
@@ -260,7 +253,6 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
                 <br>"""
                 html_miolo = html_miolo.replace("[TABELA_RASTREIO]", tabela_html)
             
-            # Envelopa tudo com a fonte oficial do E-mail
             html_final_email = f"""
             <html>
                 <body style="font-family: Calibri, Arial, sans-serif; color: #1F3864; font-size: 11pt; line-height: 1.5;">
@@ -279,7 +271,6 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
                     break
 
             try:
-                # Disparo pelo Outlook COM
                 mail = outlook.CreateItem(0)
                 mail.SentOnBehalfOfName = remetente_oficial
                 mail.Subject = str(assunto)
@@ -288,7 +279,6 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
                     mail.BCC = str(bcc)
                 mail.HTMLBody = html_final_email
                 
-                # --- O TRUQUE DE MESTRE PARA SALVAR NA CAIXA CERTA ---
                 try:
                     remetente_obj = outlook.Session.CreateRecipient(remetente_oficial)
                     remetente_obj.Resolve() 
@@ -297,15 +287,14 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
                         pasta_enviados_compartilhada = outlook.Session.GetSharedDefaultFolder(remetente_obj, 5)
                         mail.SaveSentMessageFolder = pasta_enviados_compartilhada
                 except Exception as err:
-                    print(f"Aviso: Não conseguiu acessar a pasta enviados do grupo. {err}")
-                # -----------------------------------------------------
+                    print(f"Aviso: Salvando na pasta enviados padrão. {err}")
 
                 mail.Send()
                 
                 sh_ROBO.cell(row=linha_excel, column=coluna_status).value = "Enviado"
                 wb.save(caminho_arquivo) 
                 enviados += 1
-                time.sleep(0.5) # Pausa rápida para não sobrecarregar o Outlook
+                time.sleep(0.5) 
                 
             except Exception as e:
                 print(f"Erro em {nome}: {e}")
@@ -333,9 +322,9 @@ def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
 # --- FRONT-END (INTERFACE GRÁFICA) ---
 class AppEmail(tb.Window):
     def __init__(self):
-        super().__init__(themename="litera") 
+        super().__init__(themename="yeti") 
         self.title("Robô Envio Outlook Alelo") 
-        self.geometry("1250x850") 
+        self.geometry("1300x850") 
         self.resizable(False, False)
         
         caminho_icone = resource_path("logo.png")
@@ -350,6 +339,8 @@ class AppEmail(tb.Window):
         self.caminho_planilha = ""
         self.tipo_ativo = "sedex" 
         
+        self.remetente = "adm.beneficios@casasbahia.com.br"
+        self.var_remetente = tb.StringVar(value=f"📧 Remetente: {self.remetente}")
         self.var_status = tb.StringVar(value="Pronto para iniciar.")
         self.var_tipo_msg = tb.StringVar(value="sedex")
         
@@ -372,7 +363,7 @@ class AppEmail(tb.Window):
         lbl_subtitulo = tb.Label(frame_titles, text="Módulo de Disparos por E-mail - Cartão Alelo", font=("Segoe UI", 10), foreground="gray")
         lbl_subtitulo.pack(anchor=W)
         
-        btn_ajuda = tb.Button(frame_header, text="Como utilizar❓", bootstyle="info-outline", command=self.mostrar_ajuda)
+        btn_ajuda = tb.Button(frame_header, text="Como utilizar❓", bootstyle="primary", command=self.mostrar_ajuda)
         btn_ajuda.pack(side=RIGHT, anchor=N)
         # ----------------------------------
         
@@ -391,25 +382,32 @@ class AppEmail(tb.Window):
         frame_left = tb.Frame(frame_content)
         frame_left.pack(side=LEFT, fill=Y, expand=False, padx=(0, 15))
 
-        frame_arquivo = tb.LabelFrame(frame_left, text=" 1. Base de Disparos ")
+        frame_remetente = tb.LabelFrame(frame_left, text=" 1. Conta Remetente (De:) ")
+        frame_remetente.pack(fill=X, pady=(0, 15), ipadx=5, ipady=5)
+        lbl_remetente = tb.Label(frame_remetente, textvariable=self.var_remetente, font=("Segoe UI", 10, "bold"))
+        lbl_remetente.pack(anchor=W, padx=15, pady=(10, 5))
+        self.btn_remetente = tb.Button(frame_remetente, text="🔄 Mudar Remetente", bootstyle="primary", command=self.mudar_remetente)
+        self.btn_remetente.pack(anchor=W, padx=15, pady=(0, 10))
+
+        frame_arquivo = tb.LabelFrame(frame_left, text=" 2. Base de Disparos ")
         frame_arquivo.pack(fill=X, pady=(0, 15), ipadx=5, ipady=5)
         
         frame_botoes_arquivo = tb.Frame(frame_arquivo)
         frame_botoes_arquivo.pack(anchor=W, fill=X, padx=15, pady=(10, 5))
         
-        self.btn_procurar = tb.Button(frame_botoes_arquivo, text="📂 Escolher Planilha", bootstyle=SECONDARY, command=self.selecionar_arquivo)
+        self.btn_procurar = tb.Button(frame_botoes_arquivo, text="📂 Escolher Planilha", bootstyle="primary", command=self.selecionar_arquivo)
         self.btn_procurar.pack(side=LEFT, padx=(0, 10))
         
-        self.btn_limpar = tb.Button(frame_botoes_arquivo, text="🧹 Limpar Status", bootstyle="warning-outline", command=self.limpar_status_planilha)
+        self.btn_limpar = tb.Button(frame_botoes_arquivo, text="🧹 Limpar Status", bootstyle="warning", command=self.limpar_status_planilha)
         self.btn_limpar.pack(side=LEFT)
         
-        self.lbl_caminho = tb.Label(frame_arquivo, text="Nenhuma planilha (.xlsx) selecionada", font=("Segoe UI", 9, "italic"), foreground="gray", wraplength=280)
+        self.lbl_caminho = tb.Label(frame_arquivo, text="Nenhuma planilha (.xlsx) selecionada", font=("Segoe UI", 9, "italic"), foreground="black", wraplength=280)
         self.lbl_caminho.pack(anchor=W, fill=X, expand=True, padx=15, pady=(0, 10))
         
-        lbl_info_assunto = tb.Label(frame_arquivo, text="O Assunto e BCC são lidos\ndas células C4 e C6 da aba ROBO.", font=("Segoe UI", 8), foreground="gray")
+        lbl_info_assunto = tb.Label(frame_arquivo, text="O Assunto e BCC são lidos\ndas células C4 e C6 da aba ROBO.", font=("Segoe UI", 8), foreground="black")
         lbl_info_assunto.pack(anchor=W, padx=15, pady=(0, 10))
 
-        frame_tipo = tb.LabelFrame(frame_left, text=" 2. Tipo de Comunicação ")
+        frame_tipo = tb.LabelFrame(frame_left, text=" 3. Tipo de Comunicação ")
         frame_tipo.pack(fill=X, pady=(0, 0), ipadx=5, ipady=5)
         tb.Radiobutton(frame_tipo, text="Envio Correios (Sedex)", variable=self.var_tipo_msg, value="sedex", command=self.trocar_aba).pack(anchor=W, padx=15, pady=(10, 5))
         tb.Radiobutton(frame_tipo, text="Retirada Presencial (Hub SCS)", variable=self.var_tipo_msg, value="scs", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
@@ -418,17 +416,16 @@ class AppEmail(tb.Window):
         tb.Radiobutton(frame_tipo, text="Re-aviso (Hub SCS)", variable=self.var_tipo_msg, value="reaviso_scs", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
         tb.Radiobutton(frame_tipo, text="Re-aviso (Hub Berrini)", variable=self.var_tipo_msg, value="reaviso_berrini", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
         tb.Separator(frame_tipo).pack(fill=X, padx=15, pady=5)
-        # --- O NOVO BOTÃO DE MENSAGEM PERSONALIZADA ---
         tb.Radiobutton(frame_tipo, text="Mensagem Personalizada (Livre)", variable=self.var_tipo_msg, value="personalizada", command=self.trocar_aba).pack(anchor=W, padx=15, pady=(5, 10))
 
         # ====== COLUNA DIREITA ======
         frame_right = tb.Frame(frame_content)
         frame_right.pack(side=LEFT, fill=BOTH, expand=True)
 
-        frame_msg = tb.LabelFrame(frame_right, text=" 3. Pré-visualização e Edição do E-mail (Texto Simples) ")
+        frame_msg = tb.LabelFrame(frame_right, text=" 4. Pré-visualização e Edição do E-mail (Texto Simples) ")
         frame_msg.pack(fill=BOTH, expand=True, ipadx=5, ipady=5)
         
-        lbl_dica = tb.Label(frame_msg, text="💡 DICA: Escreva normalmente. Para negrito, use *asteriscos*. O robô ajusta as a formatação automaticamente.", font=("Segoe UI", 9, "bold"), bootstyle=INFO)
+        lbl_dica = tb.Label(frame_msg, text="💡 DICA: Escreva normalmente. Para negrito, use *asteriscos*. O robô ajusta as linhas automaticamente.", font=("Segoe UI", 9, "bold"), bootstyle=PRIMARY)
         lbl_dica.pack(anchor=W, padx=15, pady=(5,0))
         
         scroll_txt = tb.Scrollbar(frame_msg)
@@ -439,17 +436,31 @@ class AppEmail(tb.Window):
         
         self.txt_mensagem.insert("1.0", carregar_template("sedex"))
 
+    def mudar_remetente(self):
+        novo_remetente = Querybox.get_string(
+            title="Configurar Remetente", 
+            prompt="Digite o e-mail que vai enviar as mensagens\n(ex: adm.beneficios@casasbahia.com.br ou o seu e-mail pessoal):", 
+            initialvalue=self.remetente
+        )
+        if novo_remetente:
+            self.remetente = novo_remetente.strip()
+            self.var_remetente.set(f"📧 Remetente: {self.remetente}")
+            self.salvar_config_anterior()
+            self.atualizar_status("Remetente atualizado com sucesso.", SUCCESS)
+
     def mostrar_ajuda(self):
         texto_ajuda = (
             "PASSO A PASSO DE USO:\n\n"
-            "1. PLANILHA DE DADOS:\n"
-            "Clique em 'Escolher Planilha' e selecione a sua base. A planilha precisa ter a coluna 'Enviar' marcada com 'x'. (O robô cria uma cópia de segurança automática para não corromper sua base original!).\n\n"
-            "2. ASSUNTO E CÓPIA (BCC):\n"
+            "1. CONTA REMETENTE:\n"
+            "Por padrão o e-mail sai da caixa adm.beneficios. Se precisar disparar de outra caixa (ou da sua própria), clique em 'Mudar Remetente' e digite o novo e-mail.\n\n"
+            "2. PLANILHA DE DADOS:\n"
+            "Clique em 'Escolher Planilha' e selecione a sua base. A planilha precisa ter a coluna 'Enviar' com um 'x'. (O robô cria uma cópia de segurança automática para não corromper sua base!).\n\n"
+            "3. ASSUNTO E CÓPIA (BCC):\n"
             "O robô lê o Assunto e os e-mails de Cópia Oculta diretamente das células C4 e C6 da aba ROBO no Excel.\n\n"
-            "3. MENSAGEM:\n"
-            "Escolha o tipo de disparo. Você pode editar o texto na tela preta. Se usar a opção 'Mensagem Personalizada', pode escrever o que quiser e usar a tag {primeiro_nome} para o robô chamar o colaborador pelo nome.\n\n"
-            "4. EXECUTAR:\n"
-            "Clique em 'Iniciar Disparos de E-mail'. O Outlook enviará as mensagens em segundo plano. Dica: Use 'Limpar Status' para apagar os registros da planilha e testar novamente."
+            "4. MENSAGEM:\n"
+            "Escolha o tipo de disparo. Na opção 'Mensagem Personalizada', use a tag {primeiro_nome} onde quiser que o robô chame o colaborador pelo nome.\n\n"
+            "5. EXECUTAR:\n"
+            "Clique em 'Iniciar Disparos de E-mail'. O Outlook trabalhará em segundo plano."
         )
         messagebox.showinfo("Guia Rápido - Robô do Outlook", texto_ajuda)
 
@@ -513,6 +524,10 @@ class AppEmail(tb.Window):
                 with open(ARQUIVO_CONFIG, 'r', encoding='utf-8') as f:
                     dados = json.load(f)
                     caminho_salvo = dados.get("caminho", "")
+                    remetente_salvo = dados.get("remetente", "adm.beneficios@casasbahia.com.br")
+                    self.remetente = remetente_salvo
+                    self.var_remetente.set(f"📧 Remetente: {self.remetente}")
+                    
                     if os.path.exists(caminho_salvo):
                         self.caminho_planilha = caminho_salvo
                         self.lbl_caminho.config(text=os.path.basename(caminho_salvo), foreground="black", font=("Segoe UI", 10, "bold"))
@@ -521,7 +536,7 @@ class AppEmail(tb.Window):
     def salvar_config_anterior(self):
         try:
             with open(ARQUIVO_CONFIG, 'w', encoding='utf-8') as f:
-                json.dump({"caminho": self.caminho_planilha}, f)
+                json.dump({"caminho": self.caminho_planilha, "remetente": self.remetente}, f)
         except Exception: pass
 
     def iniciar_disparos(self):
@@ -529,7 +544,6 @@ class AppEmail(tb.Window):
             messagebox.showwarning("Aviso", "Por favor, selecione a planilha de pendências antes de iniciar o envio.")
             return
             
-        # --- A MÁGICA DA CÓPIA DE SEGURANÇA NO E-MAIL ---
         diretorio = os.path.dirname(self.caminho_planilha)
         nome_arquivo = os.path.basename(self.caminho_planilha)
         
@@ -545,7 +559,6 @@ class AppEmail(tb.Window):
             except Exception as e:
                 messagebox.showerror("Erro de Cópia", f"Não foi possível criar a cópia de segurança:\n{e}")
                 return
-        # ------------------------------------------------
             
         texto_atual = self.txt_mensagem.get("1.0", tk.END).strip()
         salvar_template(self.tipo_ativo, texto_atual) 
@@ -555,9 +568,8 @@ class AppEmail(tb.Window):
         elif "{primeiro_nome}" not in texto_atual:
             if not messagebox.askyesno("Cuidado!", "Você apagou a tag {primeiro_nome}. A mensagem não será personalizada.\nEnviar mesmo assim?"): return
 
-        threading.Thread(target=processar_disparos_email, args=(self, self.caminho_planilha, texto_atual), daemon=True).start()
+        threading.Thread(target=processar_disparos_email, args=(self, self.caminho_planilha, texto_atual, self.remetente), daemon=True).start()
 
 if __name__ == "__main__":
     app = AppEmail()
     app.mainloop()
-    
