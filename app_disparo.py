@@ -1,239 +1,487 @@
+import os
+import sys
+import json
+import threading
+import time
+import pythoncom
 import win32com.client as win32
-import pythoncom  
-from openpyxl import load_workbook
+import re
 import pandas as pd
+from openpyxl import load_workbook
+import tkinter as tk
+from tkinter import filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
-from ttkbootstrap.dialogs import Messagebox
-from tkinter import filedialog
-import threading
-import os
-import json
+from PIL import Image, ImageTk
 
-import sys
-
-def resolver_caminho(caminho_relativo):
-    """ Retorna o caminho absoluto, funcionando tanto no VS Code quanto no .exe gerado """
+# --- FUNÇÃO MÁGICA PARA A LOGO NO .EXE ---
+def resource_path(relative_path):
     try:
-        # O PyInstaller cria uma pasta temporária em sys._MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
-    return os.path.join(base_path, caminho_relativo)
+    return os.path.join(base_path, relative_path)
 
-CONFIG_FILE = "config_beneficios.json"
+# --- CONFIGURAÇÕES DE DIRETÓRIO DINÂMICAS ---
+if getattr(sys, 'frozen', False):
+    PASTA_BASE = os.path.dirname(sys.executable)
+else:
+    PASTA_BASE = os.path.dirname(os.path.abspath(__file__))
 
-# --- LÓGICA DE BACK-END (O DISPARO) ---
-def processar_disparos(caminho_arquivo, label_status, btn_iniciar, master):
-    # Avisa ao Windows que esta Thread vai usar ferramentas COM (Outlook)
+ARQUIVO_CONFIG = os.path.join(PASTA_BASE, "config_email_beneficios.json")
+
+# 5 Arquivos de Template exclusivos para o E-mail
+ARQUIVOS_TEMPLATES = {
+    "sedex": os.path.join(PASTA_BASE, "email_template_sedex.txt"),
+    "scs": os.path.join(PASTA_BASE, "email_template_scs.txt"),
+    "berrini": os.path.join(PASTA_BASE, "email_template_berrini.txt"),
+    "reaviso_scs": os.path.join(PASTA_BASE, "email_template_reaviso_scs.txt"),
+    "reaviso_berrini": os.path.join(PASTA_BASE, "email_template_reaviso_berrini.txt")
+}
+
+TEXTOS_PADROES = {
+    "sedex": """Boa tarde.
+Olá {primeiro_nome}, tudo bem?
+
+É um prazer tê-lo em nossa CIA como um de nossos (as) colaboradores (as), nós do time de benefícios temos uma excelente noticia para você!
+Informamos que o seu cartão *Alelo*, foi entregue em nosso HUB SCS e iremos redireciona-lo via SEDEX ao endereço cadastrado em sistema.
+
+Segue abaixo código de rastreio, para acessar, basta entrar no link: https://www.correios.com.br/
+
+[TABELA_RASTREIO]
+
+Obs.: Esta é uma mensagem automática. Por favor não responda este e-mail.
+
+Atenciosamente,
+*Grupo Casas Bahia - Gente, Gestão e Sustentabilidade*
+Operações de Benefícios""",
+
+    "scs": """Olá {primeiro_nome}, tudo bem?
+    
+Informamos que o seu *Cartão Alelo* foi recebido em nosso Hub e está disponível para a retirada.
+
+📌 *Atenção colaboradores alocados sistemicamente no Hub SCS – Filial 1580, segue abaixo informações de retirada.*
+
+📍 *Local de retirada:*
+*Hub SCS - 2° andar – Mesa n° 636 (Terceira baia a frente das salas de reuniões.)*
+
+🕒 *Horários de atendimento:*
+SEG | QUA | QUI | SEX (Sem entregas as terças-feiras)
+*Manhã:* das 9h às 11h30
+*Tarde:* das 12h30 às 16h
+
+Pedimos atenção à data para garantir o recebimento do cartão no local indicado.
+
+❓ *Dúvidas frequentes:*
+
+*• Onde identificar minha Filial de cadastro?*
+Para consulta sua filial de cadastro, acesse o Portal do Colaborador> Meu perfil> a informação estará abaixo do seu nome, departamento e diretoria.
+
+*• Posso solicitar que outra pessoa retire meu cartão?*
+Sim. A retirada pode ser feita por outro colaborador, desde que informe seu *nome completo e matrícula* no momento da retirada.
+
+Atenciosamente;
+*Operações Benefícios*
+adm.beneficios@casasbahia.com.br""",
+
+    "berrini": """Olá {primeiro_nome}, tudo bem?
+    
+Informamos que o seu *Cartão Alelo* foi recebido em nosso Hub e encontra-se disponível para retirada conforme as orientações abaixo.
+
+📌 *Colaboradores alocados sistemicamente na Estação Casas Bahia (Berrini) – Filiais 01 | 650 | 1968:*
+A retirada deve ocorrer no dia *27/02/2026*, de forma pontual, conforme a ida de um de nossos portadores ao local.
+
+📍 *Local de retirada:*
+*Hub Estação Casas Bahia (Berrini) - 4º andar - sala de Bem-Estar (ao lado do Espaço Viver Bem)*
+
+🕒 *Horário de atendimento:*
+9h30 às 17h
+
+Pedimos atenção a data informada referente ao plantão de entrega.
+
+❓ *Dúvidas frequentes:*
+
+*• Onde identificar minha Filial de cadastro?*
+Para consulta sua filial de cadastro, acesse o Portal do Colaborador> Meu perfil> a informação estará abaixo do seu nome, departamento e diretoria.
+
+*• Posso solicitar que outra pessoa retire meu cartão?*
+Sim. A retirada pode ser feita por outro colaborador, desde que informe seu *nome completo e matrícula* no momento da retirada.
+Caso já tenha retirado o seu cartão Alelo, por favor desconsiderar este e-mail!!
+
+Atenciosamente; 
+*Operações Benefícios*
+adm.beneficios@casasbahia.com.br""",
+
+    "reaviso_scs": """Olá {primeiro_nome}, tudo bem?
+ 
+Identificamos que você ainda não realizou a retirada do seu Cartão Alelo.
+
+Gostaríamos de lembrá-lo(a) que o seu cartão está disponível para retirada hoje, 04/03/2026.
+ 
+📍 *Local de retirada:*
+Hub SCS – 2º andar – Mesa 636.
+ 
+🕒 *Horário de atendimento:*
+09h às 15h.
+
+Atenciosamente; 
+*Operações Benefícios*
+adm.beneficios@casasbahia.com.br""",
+
+    "reaviso_berrini": """Olá {primeiro_nome}, tudo bem?
+ 
+Identificamos que você ainda não realizou a retirada do seu Cartão Alelo.
+
+Gostaríamos de lembrá-lo(a) que o seu cartão está disponível para retirada hoje, 04/03/2026.
+ 
+📍 *Local de retirada:*
+Hub Estação Casas Bahia (Berrini) - 4º andar - sala de Bem-Estar (ao lado do Espaço Viver Bem)
+ 
+🕒 *Horário de atendimento:*
+09h às 15h.
+
+Atenciosamente; 
+*Operações Benefícios*
+adm.beneficios@casasbahia.com.br"""
+}
+
+# --- FUNÇÕES DE SUPORTE ---
+def carregar_template(tipo):
+    caminho = ARQUIVOS_TEMPLATES[tipo]
+    if os.path.exists(caminho):
+        try:
+            with open(caminho, "r", encoding="utf-8") as f: return f.read()
+        except Exception: return TEXTOS_PADROES[tipo]
+    else:
+        with open(caminho, "w", encoding="utf-8") as f: f.write(TEXTOS_PADROES[tipo])
+        return TEXTOS_PADROES[tipo]
+
+def salvar_template(tipo, texto):
+    with open(ARQUIVOS_TEMPLATES[tipo], "w", encoding="utf-8") as f: f.write(texto)
+
+
+# --- LÓGICA DO ROBÔ DE E-MAIL ---
+def processar_disparos_email(app_gui, caminho_arquivo, template_texto_puro):
+    # Necessário para o Outlook rodar em uma Thread secundária no Windows
     pythoncom.CoInitialize() 
     
+    app_gui.atualizar_status("Lendo planilha e conectando ao Outlook...", INFO)
+    app_gui.btn_iniciar.config(state="disabled")
+    
     try:
-        master.after(0, lambda: label_status.config(text="Lendo planilha e conectando ao Outlook...", bootstyle=INFO))
-        
         wb = load_workbook(caminho_arquivo)
-        sh_capa = wb["Capa"]
+        sh_ROBO = wb["ROBO"]
         
-        assunto = sh_capa["C4"].value
-        bcc = sh_capa["C6"].value
-        remetente_oficial = "rodriguesyan143@gmail.com" # Seu e-mail de teste
+        # Pega as configurações de C4 e C6, garantindo que não deem erro se estiverem vazias
+        assunto = sh_ROBO["C4"].value if sh_ROBO["C4"].value else "Atualização - Cartão Alelo"
+        bcc = sh_ROBO["C6"].value
+        remetente_oficial = "adm.beneficios@casasbahia.com.br" 
         
-        outlook = win32.Dispatch('outlook.application')
-        emails_enviados = 0
-        erros = 0
-        
-        # CORREÇÃO: header=7 (Linha 8 do Excel)
-        df_completo = pd.read_excel(caminho_arquivo, sheet_name="Capa", header=7)
-        # Limpa espaços invisíveis dos cabeçalhos para evitar o KeyError
+        try:
+            outlook = win32.Dispatch('outlook.application')
+        except Exception as e:
+            app_gui.atualizar_status("Erro: O Outlook não está aberto ou configurado.", DANGER)
+            app_gui.btn_iniciar.config(state="normal")
+            return
+
+        df_completo = pd.read_excel(caminho_arquivo, sheet_name="ROBO", header=7)
         df_completo.columns = df_completo.columns.str.strip()
         
-        df_pendentes = df_completo[
-            (df_completo['Status'] != 'Enviado') & 
-            (df_completo['Enviar'] == 'x')
-        ]
+        df_pendentes = df_completo[(df_completo['Status'] != 'Enviado') & (df_completo['Enviar'] == 'x')]
         
-        grupos = df_pendentes.groupby('Nome') 
+        if df_pendentes.empty:
+            app_gui.atualizar_status("Nenhuma mensagem pendente na planilha!", WARNING)
+            app_gui.btn_iniciar.config(state="normal")
+            return
+
+        total = len(df_pendentes)
+        enviados = 0
+        lista_falhas = []
         
-        for nome_agrupado, dados_responsavel in grupos:
+        for index, row in df_pendentes.iterrows():
+            email_destino = str(row['Email']).strip()
+            nome = row['Nome']
+            rastreio = str(row.get('Código de Rastreio', 'N/D'))
+            matricula = str(row.get('Matricula', 'N/D')).split('.')[0] 
+            cargo = str(row.get('Cargo', 'N/D'))
+            
+            # Tratamento da data para não vir como Timestamp do Pandas
             try:
-                destino = dados_responsavel['Email'].iloc[0] 
-                matricula = dados_responsavel['Matricula'].iloc[0]
-                nome_colaborador = dados_responsavel['Nome'].iloc[0]
-                cargo = dados_responsavel['Cargo'].iloc[0]
-                rastreio = dados_responsavel['Código de Rastreio'].iloc[0]
-                
-                data_bruta = pd.to_datetime(dados_responsavel['Data de Postagem'].iloc[0], format='%d/%m/%Y')
-                data_postagem = data_bruta.strftime('%d/%m/%Y')
-                
-                master.after(0, lambda n=nome_agrupado: label_status.config(text=f"Enviando para: {n}...", bootstyle=PRIMARY))
-                
-                corpo_html = f"""
-                <html>
-                    <body style="font-family: Calibri, Arial, sans-serif; color: #1F3864; font-size: 11pt; line-height: 1.5;">
-                        <p>Boa tarde.</p>
-                        <p>Tudo bem?</p>
-                        <p>É um prazer tê-lo em nossa CIA como um de nossos (as) colaboradores (as), nós do time de benefícios temos uma excelente noticia para você!<br>
-                        Informamos que o seu cartão <strong>Alelo</strong>, foi entregue em nosso HUB SCS e iremos redireciona-lo via SEDEX ao endereço cadastrado em sistema.<br>
-                        Segue abaixo código de rastreio, para acessar, basta entrar no link: <a href="https://www.correios.com.br/" style="color: #0563C1; text-decoration: underline;">https://www.correios.com.br/</a></p>
+                data_postagem = pd.to_datetime(row.get('Data de Postagem')).strftime('%d/%m/%Y')
+            except:
+                data_postagem = str(row.get('Data de Postagem', 'N/D')).split(' ')[0]
+            
+            primeiro_nome = str(nome).split()[0].capitalize()
+            
+            # Conversão do texto puro para HTML do Outlook
+            texto_preparado = template_texto_puro.replace("{primeiro_nome}", primeiro_nome)
+            html_miolo = texto_preparado.replace('\n', '<br>')
+            html_miolo = re.sub(r'\*(.*?)\*', r'<b>\1</b>', html_miolo) # Negrito
+            
+            if "[TABELA_RASTREIO]" in html_miolo:
+                tabela_html = f"""
+                <br>
+                <table style="border-collapse: collapse; width: 100%; max-width: 900px; font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #000000; text-align: center; margin-top: 15px; margin-bottom: 15px;">
+                    <thead>
+                        <tr>
+                            <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-weight: bold;">Matricula</th>
+                            <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-weight: bold;">Nome</th>
+                            <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-weight: bold;">Cargo</th>
+                            <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-weight: bold;">Código de Rastreio</th>
+                            <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-weight: bold;">Data de Postagem</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="border: 1px solid black; padding: 8px;">{matricula}</td>
+                            <td style="border: 1px solid black; padding: 8px;">{nome}</td>
+                            <td style="border: 1px solid black; padding: 8px;">{cargo}</td>
+                            <td style="border: 1px solid black; padding: 8px;">{rastreio}</td>
+                            <td style="border: 1px solid black; padding: 8px;">{data_postagem}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <br>"""
+                html_miolo = html_miolo.replace("[TABELA_RASTREIO]", tabela_html)
+            
+            # Envelopa tudo com a fonte oficial do E-mail
+            html_final_email = f"""
+            <html>
+                <body style="font-family: Calibri, Arial, sans-serif; color: #1F3864; font-size: 11pt; line-height: 1.5;">
+                    {html_miolo}
+                </body>
+            </html>
+            """
+            
+            app_gui.atualizar_status(f"🚀 Enviando E-mail para: {primeiro_nome}... ({enviados+1}/{total})", PRIMARY)
+            
+            linha_excel = index + 9
+            coluna_status = 7
+            for col in range(1, sh_ROBO.max_column + 1):
+                if str(sh_ROBO.cell(row=8, column=col).value).strip() == "Status": 
+                    coluna_status = col
+                    break
 
-                        <table style="border-collapse: collapse; width: 100%; max-width: 900px; font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #000000; text-align: center; margin-top: 20px; margin-bottom: 20px;">
-                            <thead>
-                                <tr>
-                                    <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-style: italic; font-weight: bold;">Matricula</th>
-                                    <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-style: italic; font-weight: bold;">Nome</th>
-                                    <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-style: italic; font-weight: bold;">Cargo</th>
-                                    <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-style: italic; font-weight: bold;">Código de Rastreio</th>
-                                    <th style="border: 1px solid black; background-color: #9BC2E6; padding: 8px; font-style: italic; font-weight: bold;">Data de Postagem</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td style="border: 1px solid black; padding: 8px;">{matricula}</td>
-                                    <td style="border: 1px solid black; padding: 8px;">{nome_colaborador}</td>
-                                    <td style="border: 1px solid black; padding: 8px;">{cargo}</td>
-                                    <td style="border: 1px solid black; padding: 8px;">{rastreio}</td>
-                                    <td style="border: 1px solid black; padding: 8px;">{data_postagem}</td>
-                                </tr>
-                            </tbody>
-                        </table>
-
-                        <p style="color: #1F3864;">Obs.: Esta é uma mensagem automática. Por favor não responda este e-mail</p>
-
-                        <p style="color: #1F3864; margin-top: 30px;">Atenciosamente,<br>
-                        Grupo Casas Bahia - Gente, Gestão e Sustentabilidade<br>
-                        Operações de Benefícios</p>
-                    </body>
-                </html>
-                """
-                
+            try:
+                # Disparo pelo Outlook COM
                 mail = outlook.CreateItem(0)
                 mail.SentOnBehalfOfName = remetente_oficial
-                mail.Subject = assunto
-                mail.To = destino
+                mail.Subject = str(assunto)
+                mail.To = email_destino
                 if bcc:
-                    mail.BCC = bcc
-                mail.HTMLBody = corpo_html
-                
+                    mail.BCC = str(bcc)
+                mail.HTMLBody = html_final_email
                 mail.Send()
-                emails_enviados += 1
                 
-                indices_originais = dados_responsavel.index
-                for idx in indices_originais:
-                    # CORREÇÃO: Escreve a partir da linha 9
-                    linha_excel = idx + 9 
-                    sh_capa.cell(row=linha_excel, column=7).value = "Enviado" 
-                    
+                sh_ROBO.cell(row=linha_excel, column=coluna_status).value = "Enviado"
+                wb.save(caminho_arquivo) 
+                enviados += 1
+                time.sleep(0.5) # Pausa rápida para não sobrecarregar o Outlook
+                
             except Exception as e:
-                erros += 1
-                print(f"Erro ao enviar para {nome_agrupado}: {str(e)}")
+                print(f"Erro em {nome}: {e}")
+                sh_ROBO.cell(row=linha_excel, column=coluna_status).value = "Não Encontrado"
+                wb.save(caminho_arquivo)
+                lista_falhas.append(str(nome))
 
-        wb.save(caminho_arquivo)
+        app_gui.btn_iniciar.config(state="normal")
         
-        def mostrar_sucesso():
-            if erros == 0 and emails_enviados > 0:
-                Messagebox.show_info(f"Processo finalizado perfeitamente!\n\n✔️ E-mails enviados: {emails_enviados}\n❌ Falhas: {erros}", "Sucesso")
-            elif erros > 0:
-                Messagebox.show_warning(f"Processo finalizado com ressalvas.\n\n✔️ E-mails enviados: {emails_enviados}\n❌ Falhas: {erros}", "Aviso")
-            else:
-                Messagebox.show_info("Nenhum e-mail pendente de envio encontrado na planilha.", "Concluído")
-            label_status.config(text="Aguardando nova operação...", bootstyle=SECONDARY)
-            btn_iniciar.config(state=NORMAL)
-            
-        master.after(0, mostrar_sucesso)
+        if lista_falhas:
+            app_gui.atualizar_status(f"⚠️ Concluído com {len(lista_falhas)} falha(s).", WARNING)
+            nomes_falha = "\n".join(lista_falhas)
+            messagebox.showwarning("Atenção - Relatório de E-mails", f"Processo finalizado!\n\n✅ Sucesso: {enviados}\n❌ Falhas: {len(lista_falhas)}\n\nAs seguintes pessoas falharam (e-mail inválido/erro Outlook):\n\n{nomes_falha}")
+        else:
+            app_gui.atualizar_status(f"🎉 Todos os e-mails enviados com sucesso!", SUCCESS)
+            messagebox.showinfo("Sucesso Total", "Todos os disparos foram concluídos perfeitamente via Outlook!")
 
     except Exception as e:
-        def mostrar_erro(mensagem=str(e)):
-            Messagebox.show_error(f"Erro crítico ao processar o arquivo:\n{mensagem}", "Erro Fatal")
-            label_status.config(text="Falha no processamento.", bootstyle=DANGER)
-            btn_iniciar.config(state=NORMAL)
-            
-        master.after(0, mostrar_erro)
-        
+        app_gui.atualizar_status(f"Erro Crítico no Robô: {e}", DANGER)
+        app_gui.btn_iniciar.config(state="normal")
     finally:
         pythoncom.CoUninitialize()
 
+
 # --- FRONT-END (INTERFACE GRÁFICA) ---
-class AppDisparoEmails:
-    def __init__(self, master):
-        self.master = master
-        self.master.title("Robô de E-mails - Benefícios")
-        self.master.geometry("500x350")
+class AppEmail(tb.Window):
+    def __init__(self):
+        super().__init__(themename="litera") 
+        self.title("Robô Envio Outlook Alelo") 
+        self.geometry("1000x850") 
+        self.resizable(False, False)
         
-        self.caminho_planilha = None
-        
-        try:
-            # Agora ele acha a imagem embutida!
-            caminho_logo = resolver_caminho("logo.png")
-            icone = tb.PhotoImage(file=caminho_logo)
-            self.master.iconphoto(False, icone)
-        except Exception as e:
-            print("Logo não encontrada na pasta, seguindo sem ícone.")
-        
-        lbl_titulo = tb.Label(master, text="Disparo de Benefícios", font=("Helvetica", 18, "bold"))
-        lbl_titulo.pack(pady=20)
-        
-        frame_arquivo = tb.Frame(master)
-        frame_arquivo.pack(pady=10, fill=X, padx=20)
-        
-        self.btn_selecionar = tb.Button(frame_arquivo, text="📂 Selecionar Planilha", command=self.selecionar_arquivo, bootstyle=INFO)
-        self.btn_selecionar.pack(side=LEFT, padx=10)
-        
-        self.lbl_arquivo = tb.Label(frame_arquivo, text="Nenhum arquivo selecionado", foreground="gray")
-        self.lbl_arquivo.pack(side=LEFT, padx=10)
-        
-        self.lbl_status = tb.Label(master, text="Aguardando seleção de arquivo...", font=("Helvetica", 10), bootstyle=SECONDARY)
-        self.lbl_status.pack(pady=20)
-        
-        self.btn_iniciar = tb.Button(master, text="🚀 Iniciar Disparos", command=self.iniciar_processo, bootstyle=SUCCESS, state=DISABLED, width=20)
-        self.btn_iniciar.pack(pady=10)
-
-        self.carregar_config()
-
-    def carregar_config(self):
-        if os.path.exists(CONFIG_FILE):
+        caminho_icone = resource_path("logo.png")
+        if os.path.exists(caminho_icone):
             try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    dados = json.load(f)
-                    caminho_salvo = dados.get("caminho", "")
-                    
-                    if os.path.exists(caminho_salvo):
-                        self.caminho_planilha = caminho_salvo
-                        nome_arquivo = os.path.basename(caminho_salvo)
-                        self.lbl_arquivo.config(text=nome_arquivo, foreground="black")
-                        self.lbl_status.config(text="Última planilha carregada automaticamente.", bootstyle=PRIMARY)
-                        self.btn_iniciar.config(state=NORMAL)
-            except Exception as e:
-                print("Não foi possível carregar as configurações antigas.")
+                img_icon = Image.open(caminho_icone)
+                icone = ImageTk.PhotoImage(img_icon)
+                self.iconphoto(False, icone)
+            except Exception:
+                pass 
+        
+        self.caminho_planilha = ""
+        self.tipo_ativo = "sedex" 
+        
+        self.var_status = tb.StringVar(value="Pronto para iniciar.")
+        self.var_tipo_msg = tb.StringVar(value="sedex")
+        
+        self.construir_interface()
+        self.carregar_config_anterior()
 
-    def salvar_config(self, caminho):
-        try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump({"caminho": caminho}, f)
-        except Exception as e:
-            print("Não foi possível salvar a configuração.")
+    def construir_interface(self):
+        frame_main = tb.Frame(self, padding=20)
+        frame_main.pack(fill=BOTH, expand=True)
+        
+        lbl_titulo = tb.Label(frame_main, text="Automação Microsoft Outlook", font=("Segoe UI", 20, "bold"), bootstyle=PRIMARY)
+        lbl_titulo.pack(pady=(0, 2))
+        lbl_subtitulo = tb.Label(frame_main, text="Módulo de Disparos por E-mail - Cartão Alelo", font=("Segoe UI", 10), foreground="gray")
+        lbl_subtitulo.pack(pady=(0, 15))
+        
+        frame_rodape = tb.Frame(frame_main)
+        frame_rodape.pack(fill=X, side=BOTTOM)
+        self.lbl_status = tb.Label(frame_rodape, textvariable=self.var_status, font=("Segoe UI", 10, "bold"), bootstyle=SECONDARY)
+        self.lbl_status.pack(side=LEFT)
+
+        self.btn_iniciar = tb.Button(frame_main, text="▶ INICIAR DISPAROS DE E-MAIL", bootstyle="success", padding=10, command=self.iniciar_disparos)
+        self.btn_iniciar.pack(fill=X, side=BOTTOM, pady=(15, 15))
+
+        frame_content = tb.Frame(frame_main)
+        frame_content.pack(fill=BOTH, expand=True)
+
+        # ====== COLUNA ESQUERDA ======
+        frame_left = tb.Frame(frame_content)
+        frame_left.pack(side=LEFT, fill=Y, expand=False, padx=(0, 15))
+
+        frame_arquivo = tb.LabelFrame(frame_left, text=" 1. Base de Disparos ")
+        frame_arquivo.pack(fill=X, pady=(0, 15), ipadx=5, ipady=5)
+        
+        frame_botoes_arquivo = tb.Frame(frame_arquivo)
+        frame_botoes_arquivo.pack(anchor=W, fill=X, padx=15, pady=(10, 5))
+        
+        self.btn_procurar = tb.Button(frame_botoes_arquivo, text="📂 Escolher Planilha", bootstyle=SECONDARY, command=self.selecionar_arquivo)
+        self.btn_procurar.pack(side=LEFT, padx=(0, 10))
+        
+        self.btn_limpar = tb.Button(frame_botoes_arquivo, text="🧹 Limpar Status", bootstyle="warning-outline", command=self.limpar_status_planilha)
+        self.btn_limpar.pack(side=LEFT)
+        
+        self.lbl_caminho = tb.Label(frame_arquivo, text="Nenhuma planilha (.xlsx) selecionada", font=("Segoe UI", 9, "italic"), foreground="gray", wraplength=280)
+        self.lbl_caminho.pack(anchor=W, fill=X, expand=True, padx=15, pady=(0, 10))
+        
+        lbl_info_assunto = tb.Label(frame_arquivo, text="O Assunto e BCC são lidos\ndas células C4 e C6 da aba ROBO.", font=("Segoe UI", 8), foreground="gray")
+        lbl_info_assunto.pack(anchor=W, padx=15, pady=(0, 10))
+
+        frame_tipo = tb.LabelFrame(frame_left, text=" 2. Tipo de Comunicação ")
+        frame_tipo.pack(fill=X, pady=(0, 0), ipadx=5, ipady=5)
+        tb.Radiobutton(frame_tipo, text="Envio Correios (Sedex)", variable=self.var_tipo_msg, value="sedex", command=self.trocar_aba).pack(anchor=W, padx=15, pady=(10, 5))
+        tb.Radiobutton(frame_tipo, text="Retirada Presencial (Hub SCS)", variable=self.var_tipo_msg, value="scs", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
+        tb.Radiobutton(frame_tipo, text="Retirada Presencial (Hub Berrini)", variable=self.var_tipo_msg, value="berrini", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
+        tb.Separator(frame_tipo).pack(fill=X, padx=15, pady=5)
+        tb.Radiobutton(frame_tipo, text="Re-aviso (Hub SCS)", variable=self.var_tipo_msg, value="reaviso_scs", command=self.trocar_aba).pack(anchor=W, padx=15, pady=5)
+        tb.Radiobutton(frame_tipo, text="Re-aviso (Hub Berrini)", variable=self.var_tipo_msg, value="reaviso_berrini", command=self.trocar_aba).pack(anchor=W, padx=15, pady=(5, 10))
+
+        # ====== COLUNA DIREITA ======
+        frame_right = tb.Frame(frame_content)
+        frame_right.pack(side=LEFT, fill=BOTH, expand=True)
+
+        frame_msg = tb.LabelFrame(frame_right, text=" 3. Pré-visualização e Edição do E-mail (Texto Simples) ")
+        frame_msg.pack(fill=BOTH, expand=True, ipadx=5, ipady=5)
+        
+        lbl_dica = tb.Label(frame_msg, text="💡 DICA: Escreva normalmente. Para negrito, use *asteriscos*. O robô ajusta as linhas para HTML.", font=("Segoe UI", 9, "bold"), bootstyle=INFO)
+        lbl_dica.pack(anchor=W, padx=15, pady=(5,0))
+        
+        scroll_txt = tb.Scrollbar(frame_msg)
+        scroll_txt.pack(side=RIGHT, fill=Y, pady=5, padx=(0,10))
+        self.txt_mensagem = tb.Text(frame_msg, font=("Segoe UI", 10), wrap="word", yscrollcommand=scroll_txt.set)
+        self.txt_mensagem.pack(side=LEFT, fill=BOTH, expand=True, padx=(15,0), pady=5)
+        scroll_txt.config(command=self.txt_mensagem.yview)
+        
+        self.txt_mensagem.insert("1.0", carregar_template("sedex"))
+
+    def trocar_aba(self):
+        texto_atual = self.txt_mensagem.get("1.0", tk.END).strip()
+        salvar_template(self.tipo_ativo, texto_atual)
+        novo_tipo = self.var_tipo_msg.get()
+        self.tipo_ativo = novo_tipo
+        self.txt_mensagem.delete("1.0", tk.END)
+        self.txt_mensagem.insert("1.0", carregar_template(novo_tipo))
+
+    def atualizar_status(self, texto, estilo=INFO):
+        self.var_status.set(texto)
+        self.lbl_status.config(bootstyle=estilo)
+        self.update_idletasks()
 
     def selecionar_arquivo(self):
-        caminho = filedialog.askopenfilename(
-            title="Selecione a base do Excel",
-            filetypes=(("Arquivos Excel", "*.xlsx"), ("Todos os arquivos", "*.*"))
-        )
-        if caminho:
-            self.caminho_planilha = caminho
-            nome_arquivo = os.path.basename(caminho)
-            self.lbl_arquivo.config(text=nome_arquivo, foreground="black")
-            self.lbl_status.config(text="Planilha carregada. Pronto para iniciar.", bootstyle=PRIMARY)
-            self.btn_iniciar.config(state=NORMAL)
-            self.salvar_config(caminho)
+        arquivo = filedialog.askopenfilename(title="Selecione a Planilha", filetypes=[("Planilhas do Excel", "*.xlsx")])
+        if arquivo:
+            self.caminho_planilha = arquivo
+            self.lbl_caminho.config(text=os.path.basename(arquivo), foreground="black", font=("Segoe UI", 10, "bold"))
+            self.atualizar_status("Planilha vinculada com sucesso.", INFO)
+            self.salvar_config_anterior()
 
-    def iniciar_processo(self):
+    def limpar_status_planilha(self):
         if not self.caminho_planilha:
+            messagebox.showwarning("Aviso", "Por favor, selecione a planilha de pendências primeiro.")
+            return
+
+        resposta = messagebox.askyesno("Limpar Status", "Tem certeza que deseja apagar todos os registros 'Enviado' e 'Não Encontrado' da planilha?\n\nIsso permitirá que o robô envie e-mails novamente.")
+        if not resposta: return
+
+        try:
+            wb = load_workbook(self.caminho_planilha)
+            sh_ROBO = wb["ROBO"]
+            coluna_status = 7
+            for col in range(1, sh_ROBO.max_column + 1):
+                if str(sh_ROBO.cell(row=8, column=col).value).strip() == "Status":
+                    coluna_status = col
+                    break
+            
+            linhas_apagadas = 0
+            for row in range(9, sh_ROBO.max_row + 1):
+                valor = str(sh_ROBO.cell(row=row, column=coluna_status).value)
+                if valor in ["Enviado", "Não Encontrado"]:
+                    sh_ROBO.cell(row=row, column=coluna_status).value = ""
+                    linhas_apagadas += 1
+                    
+            wb.save(self.caminho_planilha)
+            messagebox.showinfo("Sucesso", f"Status limpos com sucesso!\n{linhas_apagadas} linhas foram resetadas.")
+            self.atualizar_status(f"Planilha resetada ({linhas_apagadas} linhas). Pronto para envio de E-mails.", SUCCESS)
+            
+        except PermissionError:
+            messagebox.showerror("Erro de Permissão", "A planilha está aberta no Excel! Feche o arquivo e tente novamente.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro ao limpar a planilha:\n{e}")
+
+    def carregar_config_anterior(self):
+        if os.path.exists(ARQUIVO_CONFIG):
+            try:
+                with open(ARQUIVO_CONFIG, 'r', encoding='utf-8') as f:
+                    dados = json.load(f)
+                    caminho_salvo = dados.get("caminho", "")
+                    if os.path.exists(caminho_salvo):
+                        self.caminho_planilha = caminho_salvo
+                        self.lbl_caminho.config(text=os.path.basename(caminho_salvo), foreground="black", font=("Segoe UI", 10, "bold"))
+            except Exception: pass
+
+    def salvar_config_anterior(self):
+        try:
+            with open(ARQUIVO_CONFIG, 'w', encoding='utf-8') as f:
+                json.dump({"caminho": self.caminho_planilha}, f)
+        except Exception: pass
+
+    def iniciar_disparos(self):
+        if not self.caminho_planilha:
+            messagebox.showwarning("Aviso", "Por favor, selecione a planilha de pendências antes de iniciar o envio.")
             return
             
-        self.btn_iniciar.config(state=DISABLED)
-        thread = threading.Thread(target=processar_disparos, args=(self.caminho_planilha, self.lbl_status, self.btn_iniciar, self.master))
-        thread.start()
+        texto_atual = self.txt_mensagem.get("1.0", tk.END).strip()
+        salvar_template(self.tipo_ativo, texto_atual) 
+        
+        if self.tipo_ativo == "sedex" and "[TABELA_RASTREIO]" not in texto_atual:
+            if not messagebox.askyesno("Cuidado!", "Você apagou a tag [TABELA_RASTREIO] do Sedex. A tabela não será gerada.\nEnviar mesmo assim?"): return
+        elif "{primeiro_nome}" not in texto_atual:
+            if not messagebox.askyesno("Cuidado!", "Você apagou a tag {primeiro_nome}. A mensagem não será personalizada.\nEnviar mesmo assim?"): return
+
+        threading.Thread(target=processar_disparos_email, args=(self, self.caminho_planilha, texto_atual), daemon=True).start()
 
 if __name__ == "__main__":
-    app = tb.Window(themename="cosmo") 
-    AppDisparoEmails(app)
+    app = AppEmail()
     app.mainloop()

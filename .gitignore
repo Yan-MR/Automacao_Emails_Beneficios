@@ -1,0 +1,23 @@
+# Ignorar bases de dados e planilhas (Segurança de Dados da Empresa)
+*.xlsx
+*.xls
+*.csv
+
+# Ignorar o Ambiente Virtual
+.venv/
+venv/
+env/
+
+# Ignorar arquivos de configuração locais
+config_email_beneficios.json
+config_beneficios.json
+
+# Ignorar arquivos gerados pelo PyInstaller
+build/
+dist/
+*.spec
+
+# Ignorar cache do sistema Python
+__pycache__/
+*.pyc
+*.pyo
