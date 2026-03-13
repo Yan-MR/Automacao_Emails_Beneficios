@@ -41,24 +41,26 @@ O robô lê a aba chamada `Capa`. O cabeçalho dos dados deve estar localizado n
    ```bash
    git clone [https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git](https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git)
    cd SEU_REPOSITORIO
+   ```
 Crie e ative o ambiente virtual:
 
-Bash
-
+```bash
 python -m venv .venv
+```
 
 # No Windows:
+```bash
 .venv\Scripts\activate
+```
 Instale as dependências:
 
-Bash
-
+```bash
 pip install pandas openpyxl pywin32 ttkbootstrap
+```
 Execute o aplicativo:
 
-Bash
-
+```bash
 python app_disparo.py
-
+```
 
 Nota: É necessário ter o aplicativo Desktop do Outlook instalado e configurado na máquina para que os disparos ocorram.
